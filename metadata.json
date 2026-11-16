@@ -1,0 +1,6 @@
+{
+  "name": "GemFolders",
+  "description": "App integrata con Gemini per creare chat AI e organizzarle automaticamente o manualmente in cartelle tematiche sincronizzate su cloud.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

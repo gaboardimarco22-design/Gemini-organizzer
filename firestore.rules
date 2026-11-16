@@ -1,0 +1,132 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidFolder(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 50 &&
+             data.description is string && data.description.size() <= 200 &&
+             data.colorKey is string && data.colorKey in ['cobalt', 'amber', 'emerald', 'violet', 'coral', 'teal'] &&
+             data.iconKey is string && data.iconKey in ['folder', 'code', 'work', 'school', 'lightbulb', 'travel', 'health', 'star'] &&
+             data.isPinned is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidChatStatic(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.folderId is string && (data.folderId == '' || isValidId(data.folderId)) &&
+             data.lastMessagePreview is string && data.lastMessagePreview.size() <= 240 &&
+             data.autoOrganized is bool &&
+             data.summaryTag is string && data.summaryTag.size() <= 40 &&
+             data.messageCount is int && data.messageCount >= 0 && data.messageCount <= 10000 &&
+             data.isPinned is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidChatFolderRef(data, userId) {
+      return data.folderId == '' ||
+             exists(/databases/$(database)/documents/users/$(userId)/folders/$(data.folderId));
+    }
+
+    function isValidMessage(data, userId, chatId) {
+      return data.userId is string && data.userId == userId &&
+             data.chatId is string && data.chatId == chatId &&
+             data.role is string && data.role in ['user', 'model'] &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 32000 &&
+             data.sequence is int && data.sequence >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time;
+    }
+
+    match /users/{userId}/folders/{folderId} {
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) && isValidId(folderId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(folderId) &&
+                       incoming().keys().hasAll(['userId', 'name', 'description', 'colorKey', 'iconKey', 'isPinned', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'name', 'description', 'colorKey', 'iconKey', 'isPinned', 'createdAt', 'updatedAt']) &&
+                       isValidFolder(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(folderId) &&
+                       isValidFolder(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'colorKey', 'iconKey', 'isPinned', 'updatedAt']);
+
+      allow delete: if isOwner(userId) && isValidId(folderId);
+    }
+
+    match /users/{userId}/chats/{chatId} {
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) && isValidId(chatId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(chatId) &&
+                       incoming().keys().hasAll(['userId', 'title', 'folderId', 'lastMessagePreview', 'autoOrganized', 'summaryTag', 'messageCount', 'isPinned', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'title', 'folderId', 'lastMessagePreview', 'autoOrganized', 'summaryTag', 'messageCount', 'isPinned', 'createdAt', 'updatedAt']) &&
+                       isValidChatStatic(incoming(), userId) &&
+                       isValidChatFolderRef(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(chatId) &&
+                       isValidChatStatic(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         // Action: Organize or move chat into folder
+                         incoming().diff(existing()).affectedKeys().hasOnly(['folderId', 'title', 'summaryTag', 'autoOrganized', 'updatedAt']) ||
+                         // Action: Update chat preview and message count on message exchange
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'lastMessagePreview', 'messageCount', 'updatedAt']) ||
+                         // Action: Rename or toggle pin
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'isPinned', 'updatedAt'])
+                       ) &&
+                       isValidChatFolderRef(incoming(), userId);
+
+      allow delete: if isOwner(userId) && isValidId(chatId);
+
+      match /messages/{messageId} {
+        allow list: if isOwner(userId) && isValidId(chatId);
+        allow get: if isOwner(userId) && isValidId(chatId) && isValidId(messageId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(chatId) &&
+                         isValidId(messageId) &&
+                         incoming().keys().hasAll(['userId', 'chatId', 'role', 'text', 'sequence', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'chatId', 'role', 'text', 'sequence', 'createdAt']) &&
+                         isValidMessage(incoming(), userId, chatId) &&
+                         exists(/databases/$(database)/documents/users/$(userId)/chats/$(chatId));
+
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(chatId) && isValidId(messageId);
+      }
+    }
+  }
+}
